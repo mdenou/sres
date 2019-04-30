@@ -27,8 +27,11 @@
 #include <sys/types.h>
 #include <pwd.h>
 #include <errno.h>
+#include <sys/wait.h>
+#include <sys/types.h>
 
 #define DEBUG 0
+#define MAXLINE 512
 
 /* Find uid given a username */
 int useruid (char * user) {
@@ -45,9 +48,9 @@ int useruid (char * user) {
 
     bufsize = sysconf(_SC_GETPW_R_SIZE_MAX);
     if (bufsize == -1){
-      bufsize = 16384; 
+      bufsize = 16384;
     }
-    
+
     buf = malloc(bufsize);
     if (buf == NULL) {
       perror("malloc");
@@ -139,6 +142,7 @@ int useropt(int argc, char* newarg[]){
 int main(int argc, char* argv[])
 {
     int i, testuid, ret, uid, realuid;
+    pid_t child_pid;
     int find = -1;
     const char * pattern3 = "reservation=";
     const char * pattern4 = "res=";
@@ -146,7 +150,7 @@ int main(int argc, char* argv[])
     char * newarg[(sizeof(char *) * (argc + 1))];
     char * command;
     char * res_id;
-    char buff[512];
+    char buff[MAXLINE];
     FILE * file;
     char commandline[] = "scontrol show res %s |grep Users |awk '{print $1}' 2>&1";
 
@@ -161,10 +165,12 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
     
+    /* generate scontrol command arg 0 */
     newarg[0]="scontrol";
     memcpy(&newarg[1], &argv[1], sizeof(char *) * argc);
     newarg[argc+1] = NULL;
    
+    /* generate scontrol command arg 1 */
     if (strcmp("create",newarg[1]) != 0 && 
         strcmp("update",newarg[1]) != 0 &&
         strcmp("delete",newarg[1]) != 0) {
@@ -172,6 +178,7 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
     
+    /* generate scontrol command arg 2 */
     if  ((newarg[2] == NULL) ||
         (strncmp("res",newarg[2], 3) != 0 && 
         strncmp("reservation",newarg[2], 11) != 0))
@@ -180,11 +187,13 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
+    /* avoid flags option */
     if (flagopt(argc,argv) == -1) {
         printf("sres: error: flags are not supported\n");
         return EXIT_FAILURE;
     }
 
+    /* Check on users */
     testuid = useropt(argc,argv);
     if (testuid == 1){
       printf("sres: error: you cannot create/modify/delete reservation "
@@ -223,6 +232,8 @@ int main(int argc, char* argv[])
       command = malloc(strlen(res_id) + strlen(commandline));
       sprintf(command, commandline, res_id);
       file = popen(command, "r");
+      free(command);
+      free(res_id);
       if (file == NULL){
           printf("sres: error: Fail launching command scontrol show res\n");
           return EXIT_FAILURE;
@@ -243,7 +254,8 @@ int main(int argc, char* argv[])
         user = malloc(strlen(buff) - 6);
         strncpy(user, buff+6, strlen(buff) - 7);
       }
-      
+      pclose(file);
+
       if (i < 1) {
         printf("sres: error: The reservation does not exist\n");
         return EXIT_FAILURE;
@@ -252,12 +264,14 @@ int main(int argc, char* argv[])
       if (i > 1) {
       /* Should never happen */
         printf("sres: error: Find several reservations\n");
+        free(user);
         return EXIT_FAILURE;
       }
 
       for (i = 0; i < strlen(user); i++){
         if (user[i] == ','){
           printf("sres: error: There is several owners of the reservation\n");
+          free(user);
           return EXIT_FAILURE;
         }
       }
@@ -265,6 +279,7 @@ int main(int argc, char* argv[])
       uid = getuid();
       /* get uid of the user in reservation */
       realuid = useruid(user);
+      free(user);
       if (realuid == -1 ) {
         return EXIT_FAILURE;
       }
@@ -279,13 +294,6 @@ int main(int argc, char* argv[])
                  "for other users\n");
           return EXIT_FAILURE;
       }
-
-      /* free memory */
-      free(command);
-      free(res_id);
-      free(user);
-      pclose(file);
-    
     } else {
         if (testuid == -1){
           printf("sres: error: You must indicate your user name\n");
@@ -294,10 +302,18 @@ int main(int argc, char* argv[])
     }
 
     /* launch scontrol */
-    ret = execvp("scontrol", newarg);
-    if (ret != 0) {
-      return EXIT_FAILURE;
+    child_pid = fork();
+    if(child_pid == 0) {
+        execvp("scontrol", newarg);
+        exit(0);
+    } else {
+        waitpid(child_pid, &ret, 0);
+        if (ret != 0) {
+          cleanconf();
+          return EXIT_FAILURE;
+        } else {
+          cleanconf();
+         return EXIT_SUCCESS;
+        }
     }
-    else
-      return EXIT_SUCCESS;
 }
