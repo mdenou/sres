@@ -27,6 +27,8 @@
 #include <sys/types.h>
 #include <pwd.h>
 #include <errno.h>
+#include <sys/wait.h>
+#include <sys/types.h>
 
 #define DEBUG 0
 #define MAXLINE 512
@@ -140,6 +142,7 @@ int useropt(int argc, char* newarg[]){
 int main(int argc, char* argv[])
 {
     int i, testuid, ret, uid, realuid;
+    pid_t child_pid;
     int find = -1;
     const char * pattern3 = "reservation=";
     const char * pattern4 = "res=";
@@ -299,10 +302,18 @@ int main(int argc, char* argv[])
     }
 
     /* launch scontrol */
-    ret = execvp("scontrol", newarg);
-    if (ret != 0) {
-      return EXIT_FAILURE;
+    child_pid = fork();
+    if(child_pid == 0) {
+        execvp("scontrol", newarg);
+        exit(0);
+    } else {
+        waitpid(child_pid, &ret, 0);
+        if (ret != 0) {
+          cleanconf();
+          return EXIT_FAILURE;
+        } else {
+          cleanconf();
+         return EXIT_SUCCESS;
+        }
     }
-    else
-      return EXIT_SUCCESS;
 }
